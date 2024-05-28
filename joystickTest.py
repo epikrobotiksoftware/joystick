@@ -6,17 +6,28 @@ import os
 from collections import defaultdict
 from threading import Timer
 
-# Change this to the path of your joystick device
-joystick_path = '/dev/input/event18'  # Or use the path found under /dev/input/by-id/
-
 # Constants
 PRESS_THRESHOLD = 5  # Number of presses required to trigger the command
 RESET_TIME = 2  # Time in seconds to reset the press count
 
+# Function to find the joystick device
+def find_joystick_device():
+    devices = [InputDevice(path) for path in evdev.list_devices()]
+    for device in devices:
+        # Replace with the actual name of your joystick
+        if 'DualSense Wireless Controller' or 'Wireless Controller' in device.name:  
+            return device.path
+    return None
+
+joystick_path = find_joystick_device()
+
 # Wait for the joystick device file to be available
-while not os.path.exists(joystick_path):
-    print(f"Waiting for device {joystick_path} to become available...")
+while joystick_path is None:
+    print(f"Waiting for joystick to become available...")
     time.sleep(1)  # Wait for 1 second before checking again
+    joystick_path = find_joystick_device()
+
+print(f"Device found at {joystick_path}")
 
 # Attempt to initialize the joystick device
 try:
@@ -39,13 +50,28 @@ def execute_command(command):
     except Exception as e:
         print(f"Failed to execute command '{command}': {e}")
 
+# Function to terminate the process
+def terminate_command():
+    global process
+    if process:
+        try:
+            process.terminate()
+            process.wait()  # Wait for the process to terminate
+            print("Process terminated.")
+        except Exception as e:
+            print(f"Failed to terminate the process: {e}")
+        finally:
+            process = None
+
 # Mapping joystick buttons to commands
 button_command_map = {
-    305: 'gnome-terminal -- bash -c "ros2 launch turtlebot3_bringup turtlebot3.launch.py; exec bash"', 
-    312: 'nmcli connection down lidar && nmcli connection up plc',
-    310: 'nmcli connection down plc && nmcli connection up lidar',
+    317: 'gnome-terminal -- bash -c "ros2 launch turtlebot3_bringup turtlebot3.launch.py; exec bash"', 
+    17: 'nmcli connection down lidar && nmcli connection up plc',
+    16: 'nmcli connection down plc && nmcli connection up lidar',
     # Add more button mappings here if needed
 }
+
+terminate_button_code = 306  # Define a button code to terminate the process
 
 # Track button presses
 button_press_count = defaultdict(int)
@@ -64,20 +90,27 @@ for event in joystick.read_loop():
         print(f"Key event detected: {key_event}")  # Debug: print key event details
         if key_event.keystate == key_event.key_down:  # Check if the key state is 'down'
             button_code = key_event.scancode
-            button_press_count[button_code] += 1
-            print(f"Button {button_code} pressed {button_press_count[button_code]} times")  # Debug: press count
+            
+            if button_code == terminate_button_code:
+                terminate_command()
+            else:
+                button_press_count[button_code] += 1
+                print(f"Button {button_code} pressed {button_press_count[button_code]} times")  # Debug: press count
 
-            # Cancel any existing timer for this button and start a new one
-            if button_code in button_timers:
-                button_timers[button_code].cancel()
-            button_timers[button_code] = Timer(RESET_TIME, reset_button_press_count, [button_code])
-            button_timers[button_code].start()
+                # Cancel any existing timer for this button and start a new one
+                if button_code in button_timers:
+                    button_timers[button_code].cancel()
+                button_timers[button_code] = Timer(RESET_TIME, reset_button_press_count, [button_code])
+                button_timers[button_code].start()
 
-            if button_press_count[button_code] >= PRESS_THRESHOLD:
-                command = button_command_map.get(button_code)  # Get the command for the scancode
-                if command:
-                    print(f"Executing command: {command}")
-                    execute_command(command)
-                else:
-                    print(f"No command mapped for button code: {button_code}")  # Debug: unmapped button press
-                button_press_count[button_code] = 0  # Reset count after command execution
+                if button_press_count[button_code] >= PRESS_THRESHOLD:
+                    command = button_command_map.get(button_code)  # Get the command for the scancode
+                    if command:
+                        print(f"Executing command: {command}")
+                        execute_command(command)
+                    else:
+                        print(f"No command mapped for button code: {button_code}")  # Debug: unmapped button press
+                    button_press_count[button_code] = 0  # Reset count after command execution
+    elif event.type == ecodes.EV_ABS:  # Check if the event is an absolute axis event (e.g., joystick movement)
+        abs_event = categorize(event)
+        print(f"Absolute event detected: {abs_event}")  # Debug: print absolute event details
